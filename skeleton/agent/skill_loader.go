@@ -1,12 +1,10 @@
 package agent
 
-// skill_loader.go 实现 L3 设计文档 4.6 节的 L1 路径（最小可用）：
+// skill_loader.go 实现 L3 设计文档 4.6 节的 skill 加载（L1 + L2）：
 //
 //	扫描 ~/.cc-switch/skills/<id>/SKILL.md → 解析 frontmatter + 正文
-//	→ BuildSystemPromptWithSkills 把启用的 skill 正文拼成一段 system prompt。
-//
-// 仅做「skill 进对话」这一步（文档「选项 X：先 L1」）。脚本工具化（L2）的
-// Skill.Scripts / AsMCPTools 留作后续；这里先把字段占好位，不影响 L1。
+//	→ BuildSystemPromptWithSkills 把启用的 skill 正文拼成一段 system prompt（L1）。
+//	并扫描 <id>/scripts/* → Skill.Scripts，供 skill_runner.go 包成工具（L2）。
 //
 // 不引入 YAML 依赖：frontmatter 用首尾 "---" 包裹的简单 key: value 自解析，
 // 只取 name / description 两个字段，其余忽略。
@@ -19,13 +17,64 @@ import (
 	"strings"
 )
 
-// Skill 是一个 CC Switch SKILL 的归一化表示（L1 只用到正文 + frontmatter）。
+// Skill 是一个 CC Switch SKILL 的归一化表示。
 type Skill struct {
-	ID          string // 目录名，作为前端 toggle 的稳定标识
-	Name        string // frontmatter.name，缺省回退到 ID
-	Description string // frontmatter.description
-	Directory   string // skill 目录绝对路径
-	Body        string // 去掉 frontmatter 后的 SKILL.md 正文（已 trim）
+	ID          string        // 目录名，作为前端 toggle 的稳定标识
+	Name        string        // frontmatter.name，缺省回退到 ID
+	Description string        // frontmatter.description
+	Directory   string        // skill 目录绝对路径
+	Body        string        // 去掉 frontmatter 后的 SKILL.md 正文（已 trim）
+	Scripts     []SkillScript // scripts/ 下识别出的可执行脚本（L2）
+}
+
+// SkillScript 是 skill 目录 scripts/ 下的一个可执行脚本。
+type SkillScript struct {
+	Name string // 文件名去后缀，例如 "search"（用于工具名）
+	Path string // 绝对路径
+	Lang string // "python" | "node" | "shell" | "cmd"；空表示未识别（不包成工具）
+}
+
+// langForExt 按扩展名识别脚本解释器族；未知返回 ""。
+func langForExt(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".py":
+		return "python"
+	case ".js", ".cjs", ".mjs":
+		return "node"
+	case ".sh", ".bash":
+		return "shell"
+	case ".cmd", ".bat":
+		return "cmd"
+	default:
+		return ""
+	}
+}
+
+// loadScripts 扫描 <skillDir>/scripts/ 下可识别的脚本，按文件名排序。
+func loadScripts(skillDir string) []SkillScript {
+	dir := filepath.Join(skillDir, "scripts")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []SkillScript
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		lang := langForExt(ext)
+		if lang == "" {
+			continue
+		}
+		out = append(out, SkillScript{
+			Name: strings.TrimSuffix(e.Name(), ext),
+			Path: filepath.Join(dir, e.Name()),
+			Lang: lang,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // DefaultSkillsDir 返回 ~/.cc-switch/skills 的绝对路径。
@@ -80,6 +129,7 @@ func parseSkill(id, dir, content string) Skill {
 		Description: fm["description"],
 		Directory:   dir,
 		Body:        strings.TrimSpace(body),
+		Scripts:     loadScripts(dir),
 	}
 }
 
