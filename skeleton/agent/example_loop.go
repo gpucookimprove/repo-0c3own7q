@@ -21,18 +21,25 @@ type MCPDispatcher func(ctx context.Context, name string, args map[string]any) (
 //
 //	provider : 当前 CC Switch 选中的 provider（决定用哪个 adapter）
 //	tools    : 已启用的、归一化的 MCP 工具目录（provider 无关）
+//	skills   : 已启用的 skill（L1：正文拼进 system prompt 注入对话；可为 nil）
 //	history  : 初始消息（system + user）
 //	maxRounds: 防死循环上限
 func RunReActLoop(
 	ctx context.Context,
 	provider string,
 	tools []Tool,
+	skills []Skill,
 	history []ChatMessage,
 	maxRounds int,
 	transport LLMTransport,
 	dispatch MCPDispatcher,
 	onDelta func(StreamDelta),
 ) (StreamResult, error) {
+	// L1：把启用的 skill 正文注入为首条 system 消息（在工具/fallback 之前）。
+	if sys := BuildSystemPromptWithSkills("", skills); sys != "" {
+		history = append([]ChatMessage{{Role: "system", Content: sys}}, history...)
+	}
+
 	names := NewNameMapper()
 	adapter := AdapterFor(provider, names)
 
